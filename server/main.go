@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/docker/go-connections/nat"
+	"github.com/joho/godotenv"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -19,6 +21,10 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"mcp-docker/server/auth"
+	"mcp-docker/server/docker"
+	"mcp-docker/server/k8s"
 )
 
 // 系统清理的响应结构体
@@ -29,20 +35,44 @@ type SystemPruneReport struct {
 }
 
 func main() {
+	var err error
+	// 加载.env文件中的环境变量
+	err = godotenv.Load()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	fmt.Println("======================================")
-	fmt.Println("Docker MCP 服务器启动中...")
+	fmt.Println("Docker & K8s MCP 服务器启动中...")
 	fmt.Println("版本: 1.0.0")
 	fmt.Println("======================================")
 
-	svr := server.NewMCPServer("docker mcp server", mcp.LATEST_PROTOCOL_VERSION)
+	// 获取配置参数
+	address := os.Getenv("MCP_SERVER_ADDRESS")
+	apiKey := os.Getenv("API_KEY")
 
-	// 添加容器相关工具
+	// 创建并配置MCP服务器
+	svr := server.NewMCPServer("docker-k8s mcp server", mcp.LATEST_PROTOCOL_VERSION)
+
+	// 注意：目前无法直接设置MCP服务器的说明文本
+	// 鉴权信息将在控制台输出并写入日志
+
+	fmt.Println()
+	fmt.Println("======================================")
+	fmt.Println("MCP服务器鉴权配置：")
+	fmt.Println("1. 通过HTTP请求头 'Authorization: Bearer <apiKey>' 传递")
+	fmt.Println("2. 通过HTTP请求头 'X-API-Key: <apiKey>' 传递")
+	fmt.Println("3. 通过URL参数 '?api_key=<apiKey>' 传递")
+	fmt.Println("客户端在连接时需要提供有效的API密钥，否则将被拒绝访问。")
+	fmt.Println("======================================")
+
+	// 添加Docker容器相关工具
 	svr.AddTool(mcp.NewTool("list_containers",
 		mcp.WithDescription("列出所有容器"),
 		mcp.WithBoolean("show_all",
 			mcp.Description("是否显示所有容器，包括已停止的容器"),
 		),
-	), listContainersTool)
+	), docker.ListContainersTool)
 
 	svr.AddTool(mcp.NewTool("start_container",
 		mcp.WithDescription("启动已停止的容器"),
@@ -50,7 +80,7 @@ func main() {
 			mcp.Required(),
 			mcp.Description("要启动的容器ID"),
 		),
-	), startContainerTool)
+	), docker.StartContainerTool)
 
 	svr.AddTool(mcp.NewTool("create_container",
 		mcp.WithDescription("创建并运行一个新容器"),
@@ -77,7 +107,7 @@ func main() {
 			mcp.Description("是否在后台运行"),
 			mcp.DefaultBool(true),
 		),
-	), createContainerTool)
+	), docker.CreateContainerTool)
 
 	svr.AddTool(mcp.NewTool("stop_container",
 		mcp.WithDescription("停止指定的容器"),
@@ -85,7 +115,7 @@ func main() {
 			mcp.Required(),
 			mcp.Description("要停止的容器ID"),
 		),
-	), stopContainerTool)
+	), docker.StopContainerTool)
 
 	svr.AddTool(mcp.NewTool("remove_container",
 		mcp.WithDescription("删除指定的容器"),
@@ -97,7 +127,7 @@ func main() {
 			mcp.Description("是否强制删除，即使容器正在运行"),
 			mcp.DefaultBool(false),
 		),
-	), removeContainerTool)
+	), docker.RemoveContainerTool)
 
 	svr.AddTool(mcp.NewTool("restart_container",
 		mcp.WithDescription("重启指定的容器"),
@@ -109,7 +139,7 @@ func main() {
 			mcp.Description("停止容器前的等待时间（秒）"),
 			mcp.DefaultNumber(1.0),
 		),
-	), restartContainerTool)
+	), docker.RestartContainerTool)
 
 	svr.AddTool(mcp.NewTool("container_logs",
 		mcp.WithDescription("查看容器日志"),
@@ -125,7 +155,7 @@ func main() {
 			mcp.Description("是否显示时间戳"),
 			mcp.DefaultBool(false),
 		),
-	), containerLogsTool)
+	), docker.ContainerLogsTool)
 
 	svr.AddTool(mcp.NewTool("inspect_container",
 		mcp.WithDescription("查看容器详细信息"),
@@ -133,7 +163,7 @@ func main() {
 			mcp.Required(),
 			mcp.Description("要查看的容器ID"),
 		),
-	), inspectContainerTool)
+	), docker.InspectContainerTool)
 
 	svr.AddTool(mcp.NewTool("container_status",
 		mcp.WithDescription("快速检查容器的运行状态"),
@@ -141,16 +171,16 @@ func main() {
 			mcp.Required(),
 			mcp.Description("要检查的容器ID"),
 		),
-	), containerStatusTool)
+	), docker.ContainerStatusTool)
 
-	// 添加镜像相关工具
+	// 添加Docker镜像相关工具
 	svr.AddTool(mcp.NewTool("list_images",
 		mcp.WithDescription("列出所有镜像"),
 		mcp.WithBoolean("show_all",
 			mcp.Description("是否显示所有镜像，包括中间层镜像"),
 			mcp.DefaultBool(false),
 		),
-	), listImagesTool)
+	), docker.ListImagesTool)
 
 	svr.AddTool(mcp.NewTool("remove_image",
 		mcp.WithDescription("删除指定的镜像"),
@@ -162,7 +192,7 @@ func main() {
 			mcp.Description("是否强制删除"),
 			mcp.DefaultBool(false),
 		),
-	), removeImageTool)
+	), docker.RemoveImageTool)
 
 	svr.AddTool(mcp.NewTool("pull_image",
 		mcp.WithDescription("拉取指定的镜像"),
@@ -170,12 +200,12 @@ func main() {
 			mcp.Required(),
 			mcp.Description("要拉取的镜像名称"),
 		),
-	), pullImageTool)
+	), docker.PullImageTool)
 
-	// 添加系统相关工具
+	// 添加Docker系统相关工具
 	svr.AddTool(mcp.NewTool("system_info",
 		mcp.WithDescription("显示Docker系统信息"),
-	), systemInfoTool)
+	), docker.SystemInfoTool)
 
 	svr.AddTool(mcp.NewTool("system_prune",
 		mcp.WithDescription("清理未使用的Docker对象"),
@@ -183,12 +213,12 @@ func main() {
 			mcp.Description("是否清理所有未使用的对象，包括未使用的镜像"),
 			mcp.DefaultBool(false),
 		),
-	), systemPruneTool)
+	), docker.SystemPruneTool)
 
-	// 添加卷相关工具
+	// 添加Docker卷相关工具
 	svr.AddTool(mcp.NewTool("list_volumes",
 		mcp.WithDescription("列出所有卷"),
-	), listVolumesTool)
+	), docker.ListVolumesTool)
 
 	svr.AddTool(mcp.NewTool("remove_volume",
 		mcp.WithDescription("删除指定的卷"),
@@ -196,12 +226,12 @@ func main() {
 			mcp.Required(),
 			mcp.Description("要删除的卷名称"),
 		),
-	), removeVolumeTool)
+	), docker.RemoveVolumeTool)
 
-	// 添加网络相关工具
+	// 添加Docker网络相关工具
 	svr.AddTool(mcp.NewTool("list_networks",
 		mcp.WithDescription("列出所有网络"),
-	), listNetworksTool)
+	), docker.ListNetworksTool)
 
 	svr.AddTool(mcp.NewTool("remove_network",
 		mcp.WithDescription("删除指定的网络"),
@@ -209,7 +239,168 @@ func main() {
 			mcp.Required(),
 			mcp.Description("要删除的网络ID或名称"),
 		),
-	), removeNetworkTool)
+	), docker.RemoveNetworkTool)
+
+	// 添加Kubernetes Pod相关工具
+	svr.AddTool(mcp.NewTool("list_pods",
+		mcp.WithDescription("列出指定命名空间中的所有Pod"),
+		mcp.WithString("namespace",
+			mcp.Description("要查询的命名空间, 默认为default"),
+			mcp.DefaultString("default"),
+		),
+	), k8s.ListPodsTool)
+
+	svr.AddTool(mcp.NewTool("describe_pod",
+		mcp.WithDescription("查看Pod的详细信息"),
+		mcp.WithString("pod_name",
+			mcp.Required(),
+			mcp.Description("要查看的Pod名称"),
+		),
+		mcp.WithString("namespace",
+			mcp.Description("Pod所在的命名空间, 默认为default"),
+			mcp.DefaultString("default"),
+		),
+	), k8s.DescribePodTool)
+
+	svr.AddTool(mcp.NewTool("delete_pod",
+		mcp.WithDescription("删除指定的Pod"),
+		mcp.WithString("pod_name",
+			mcp.Required(),
+			mcp.Description("要删除的Pod名称"),
+		),
+		mcp.WithString("namespace",
+			mcp.Description("Pod所在的命名空间, 默认为default"),
+			mcp.DefaultString("default"),
+		),
+		mcp.WithBoolean("force",
+			mcp.Description("是否强制删除"),
+			mcp.DefaultBool(false),
+		),
+	), k8s.DeletePodTool)
+
+	svr.AddTool(mcp.NewTool("pod_logs",
+		mcp.WithDescription("获取Pod的日志"),
+		mcp.WithString("pod_name",
+			mcp.Required(),
+			mcp.Description("要查看日志的Pod名称"),
+		),
+		mcp.WithString("namespace",
+			mcp.Description("Pod所在的命名空间, 默认为default"),
+			mcp.DefaultString("default"),
+		),
+		mcp.WithString("container",
+			mcp.Description("要查看日志的容器名称, 如果Pod中只有一个容器则可以省略"),
+		),
+		mcp.WithNumber("tail",
+			mcp.Description("要查看的日志行数"),
+			mcp.DefaultNumber(100.0),
+		),
+	), k8s.PodLogsTool)
+
+	// 添加Kubernetes Deployment相关工具
+	svr.AddTool(mcp.NewTool("list_deployments",
+		mcp.WithDescription("列出指定命名空间中的所有Deployment"),
+		mcp.WithString("namespace",
+			mcp.Description("要查询的命名空间, 默认为default"),
+			mcp.DefaultString("default"),
+		),
+	), k8s.ListDeploymentsTool)
+
+	svr.AddTool(mcp.NewTool("describe_deployment",
+		mcp.WithDescription("查看Deployment的详细信息"),
+		mcp.WithString("deployment_name",
+			mcp.Required(),
+			mcp.Description("要查看的Deployment名称"),
+		),
+		mcp.WithString("namespace",
+			mcp.Description("Deployment所在的命名空间, 默认为default"),
+			mcp.DefaultString("default"),
+		),
+	), k8s.DescribeDeploymentTool)
+
+	svr.AddTool(mcp.NewTool("scale_deployment",
+		mcp.WithDescription("调整Deployment的副本数"),
+		mcp.WithString("deployment_name",
+			mcp.Required(),
+			mcp.Description("要调整的Deployment名称"),
+		),
+		mcp.WithString("namespace",
+			mcp.Description("Deployment所在的命名空间, 默认为default"),
+			mcp.DefaultString("default"),
+		),
+		mcp.WithNumber("replicas",
+			mcp.Required(),
+			mcp.Description("要设置的副本数"),
+		),
+	), k8s.ScaleDeploymentTool)
+
+	svr.AddTool(mcp.NewTool("restart_deployment",
+		mcp.WithDescription("重启Deployment的所有Pod"),
+		mcp.WithString("deployment_name",
+			mcp.Required(),
+			mcp.Description("要重启的Deployment名称"),
+		),
+		mcp.WithString("namespace",
+			mcp.Description("Deployment所在的命名空间, 默认为default"),
+			mcp.DefaultString("default"),
+		),
+	), k8s.RestartDeploymentTool)
+
+	// 添加Kubernetes Service相关工具
+	svr.AddTool(mcp.NewTool("list_services",
+		mcp.WithDescription("列出指定命名空间中的所有Service"),
+		mcp.WithString("namespace",
+			mcp.Description("要查询的命名空间, 默认为default"),
+			mcp.DefaultString("default"),
+		),
+	), k8s.ListServicesTool)
+
+	svr.AddTool(mcp.NewTool("describe_service",
+		mcp.WithDescription("查看Service的详细信息"),
+		mcp.WithString("service_name",
+			mcp.Required(),
+			mcp.Description("要查看的Service名称"),
+		),
+		mcp.WithString("namespace",
+			mcp.Description("Service所在的命名空间, 默认为default"),
+			mcp.DefaultString("default"),
+		),
+	), k8s.DescribeServiceTool)
+
+	// 添加Kubernetes Namespace相关工具
+	svr.AddTool(mcp.NewTool("list_namespaces",
+		mcp.WithDescription("列出所有命名空间"),
+	), k8s.ListNamespacesTool)
+
+	svr.AddTool(mcp.NewTool("describe_namespace",
+		mcp.WithDescription("查看命名空间的详细信息"),
+		mcp.WithString("namespace_name",
+			mcp.Required(),
+			mcp.Description("要查看的命名空间名称"),
+		),
+	), k8s.DescribeNamespaceTool)
+
+	svr.AddTool(mcp.NewTool("create_namespace",
+		mcp.WithDescription("创建新的命名空间"),
+		mcp.WithString("namespace_name",
+			mcp.Required(),
+			mcp.Description("要创建的命名空间名称"),
+		),
+	), k8s.CreateNamespaceTool)
+
+	svr.AddTool(mcp.NewTool("delete_namespace",
+		mcp.WithDescription("删除指定的命名空间"),
+		mcp.WithString("namespace_name",
+			mcp.Required(),
+			mcp.Description("要删除的命名空间名称"),
+		),
+	), k8s.DeleteNamespaceTool)
+
+	// 添加请求日志记录器
+	fmt.Println("启用请求日志记录器，将记录所有HTTP请求详情...")
+
+	// 创建并启动带有身份验证的SSE服务器
+	authSvr := auth.NewAuthenticatedMCPServerWithAPIKey(svr, apiKey)
 
 	// 启动服务器
 	go func() {
@@ -220,13 +411,25 @@ func main() {
 			}
 		}()
 
-		err := server.NewSSEServer(svr).Start("localhost:12345")
+		fmt.Printf("Docker & K8s MCP 服务器准备启动，监听地址 %s\n", address)
+		fmt.Printf("API密钥认证已启用，API密钥: %s\n", apiKey)
+		fmt.Println("支持的认证方式:")
+		fmt.Println("1. HTTP头: Authorization: Bearer " + apiKey)
+		fmt.Println("2. HTTP头: X-API-Key: " + apiKey)
+		fmt.Println("3. 查询参数: ?api_key=" + apiKey)
+		fmt.Println("注意: 确保Cursor连接配置中的API密钥与服务器匹配")
+
+		// 打印Cursor配置指南
+		auth.PrintCursorMCPGuide(apiKey)
+
+		err := authSvr.Start(address)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}()
 
-	fmt.Println("Docker MCP 服务器已启动，监听地址 localhost:12345")
+	fmt.Printf("Docker & K8s MCP 服务器已启动，监听地址 %s\n", address)
+	fmt.Println("API密钥认证已启用")
 	select {}
 }
 
@@ -309,6 +512,7 @@ func startContainerTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.
 	}
 }
 
+// 实现带进度条的创建容器工具
 func createContainerTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	imageName := request.Params.Arguments["image"].(string)
 	containerName, _ := request.Params.Arguments["name"].(string)
@@ -319,15 +523,31 @@ func createContainerTool(ctx context.Context, request mcp.CallToolRequest) (*mcp
 	detach, _ := request.Params.Arguments["detach"].(bool)
 
 	fmt.Println("ai 正在调用mcp server的tool: create_container, image=", imageName)
+	fmt.Println("开始创建容器，将显示实时进度...")
 
 	// 创建Docker客户端
-	cli, err := createDockerClient()
+	cli, err := docker.CreateDockerClient()
 	if err != nil {
 		return mcp.NewToolResultText(fmt.Sprintf("创建Docker客户端失败: %v", err)), err
 	}
 	defer cli.Close()
 
+	// 准备进度输出
+	var progressOutput strings.Builder
+	progressOutput.WriteString(fmt.Sprintf("开始创建容器，基于镜像：%s\n", imageName))
+	fmt.Printf("开始创建容器，基于镜像：%s\n", imageName)
+
+	// 实时显示进度的回调函数
+	progressCallback := func(message string) {
+		fmt.Print(message)
+	}
+
 	// 准备端口映射
+	var message string
+	message = "准备端口映射...\n"
+	progressOutput.WriteString(message)
+	progressCallback(message)
+
 	portBindings := nat.PortMap{}
 	exposedPorts := nat.PortSet{}
 
@@ -346,25 +566,46 @@ func createContainerTool(ctx context.Context, request mcp.CallToolRequest) (*mcp
 				HostPort: hostPort,
 			})
 			exposedPorts[natPort] = struct{}{}
+
+			message = fmt.Sprintf("  添加端口映射: %s:%s\n", hostPort, containerPort)
+			progressOutput.WriteString(message)
+			progressCallback(message)
 		}
 	}
 
 	// 准备环境变量
+	message = "准备环境变量...\n"
+	progressOutput.WriteString(message)
+	progressCallback(message)
+
 	var env []string
 	for _, e := range envArray {
 		env = append(env, e.(string))
+		message = fmt.Sprintf("  添加环境变量: %s\n", e.(string))
+		progressOutput.WriteString(message)
+		progressCallback(message)
 	}
 
 	// 准备卷映射
+	message = "准备卷映射...\n"
+	progressOutput.WriteString(message)
+	progressCallback(message)
+
 	var volumes []string
 	for _, v := range volumesArray {
 		volumes = append(volumes, v.(string))
+		message = fmt.Sprintf("  添加卷映射: %s\n", v.(string))
+		progressOutput.WriteString(message)
+		progressCallback(message)
 	}
 
 	// 准备命令
 	var cmdSlice []string
 	if cmd != "" {
 		cmdSlice = strings.Split(cmd, " ")
+		message = fmt.Sprintf("设置启动命令: %s\n", cmd)
+		progressOutput.WriteString(message)
+		progressCallback(message)
 	}
 
 	// 创建容器配置
@@ -381,32 +622,104 @@ func createContainerTool(ctx context.Context, request mcp.CallToolRequest) (*mcp
 		Binds:        volumes,
 	}
 
-	// 创建网络配置
-	networkConfig := &network.NetworkingConfig{}
-
-	// 创建容器
-	resp, err := cli.ContainerCreate(
-		ctx,
-		config,
-		hostConfig,
-		networkConfig,
-		nil,
-		containerName,
-	)
-	if err != nil {
-		return mcp.NewToolResultText(fmt.Sprintf("创建容器失败: %v", err)), err
+	// 自定义的回调函数，将所有创建容器的进度信息转发到控制台
+	containerCallback := func(update string) {
+		progressCallback(update)
 	}
 
-	// 如果设置了分离模式，启动容器
+	// 创建容器并获取进度
+	containerID, createProgress, err := createContainerWithServerProgress(ctx, cli, config, hostConfig, containerName, detach, containerCallback)
+	if err != nil {
+		return mcp.NewToolResultText(fmt.Sprintf("%s\n%v", progressOutput.String(), err)), err
+	}
+
+	// 合并进度输出
+	progressOutput.WriteString(createProgress)
+
+	fmt.Println("容器创建完成!")
+
+	// 返回结果
 	if detach {
+		return mcp.NewToolResultText(fmt.Sprintf("容器已创建并启动，ID: %s\n\n%s", containerID, progressOutput.String())), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("容器已创建，ID: %s\n\n%s", containerID, progressOutput.String())), nil
+}
+
+// createContainerWithServerProgress 创建容器并实时显示进度
+func createContainerWithServerProgress(ctx context.Context, cli *client.Client, config *container.Config, hostConfig *container.HostConfig, containerName string, detach bool, progressCallback func(string)) (string, string, error) {
+	var progressOutput strings.Builder
+
+	// 步骤跟踪
+	step := 1
+	totalSteps := 5 // 总共5个步骤：配置、创建、验证、启动(可选)、完成
+
+	// 步骤1: 配置
+	message := fmt.Sprintf("[%d/%d] 准备容器配置...\n", step, totalSteps)
+	progressOutput.WriteString(message)
+	if progressCallback != nil {
+		progressCallback(message)
+	}
+	step++
+
+	// 步骤2: 创建容器
+	message = fmt.Sprintf("[%d/%d] 创建容器...\n", step, totalSteps)
+	progressOutput.WriteString(message)
+	if progressCallback != nil {
+		progressCallback(message)
+	}
+
+	resp, err := cli.ContainerCreate(ctx, config, hostConfig, nil, nil, containerName)
+	if err != nil {
+		return "", progressOutput.String(), fmt.Errorf("创建容器失败: %v", err)
+	}
+	step++
+
+	// 步骤3: 验证
+	message = fmt.Sprintf("[%d/%d] 验证容器...\n", step, totalSteps)
+	progressOutput.WriteString(message)
+	if progressCallback != nil {
+		progressCallback(message)
+	}
+	step++
+
+	// 如果需要启动容器
+	if detach {
+		// 步骤4: 启动容器
+		message = fmt.Sprintf("[%d/%d] 启动容器...\n", step, totalSteps)
+		progressOutput.WriteString(message)
+		if progressCallback != nil {
+			progressCallback(message)
+		}
+
 		err = cli.ContainerStart(ctx, resp.ID, container.StartOptions{})
 		if err != nil {
-			return mcp.NewToolResultText(fmt.Sprintf("启动容器失败: %v", err)), err
+			return resp.ID, progressOutput.String(), fmt.Errorf("启动容器失败: %v", err)
 		}
-		return mcp.NewToolResultText(fmt.Sprintf("容器已创建并启动，ID: %s", resp.ID)), nil
+
+		// 等待一下，给容器启动一些时间
+		time.Sleep(1 * time.Second)
+
+		// 检查容器状态
+		containerInfo, err := cli.ContainerInspect(ctx, resp.ID)
+		if err == nil && containerInfo.State.Running {
+			message = "容器成功启动并正在运行!\n"
+			progressOutput.WriteString(message)
+			if progressCallback != nil {
+				progressCallback(message)
+			}
+		}
+
+		step++
 	}
 
-	return mcp.NewToolResultText(fmt.Sprintf("容器已创建，ID: %s", resp.ID)), nil
+	// 步骤5: 完成
+	message = fmt.Sprintf("[%d/%d] 操作完成!\n", totalSteps, totalSteps)
+	progressOutput.WriteString(message)
+	if progressCallback != nil {
+		progressCallback(message)
+	}
+
+	return resp.ID, progressOutput.String(), nil
 }
 
 func stopContainerTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -856,30 +1169,70 @@ func removeImageTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 	return mcp.NewToolResultText(result.String()), nil
 }
 
+// 实现带进度条的拉取镜像工具
 func pullImageTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	imageName := request.Params.Arguments["image_name"].(string)
 
 	fmt.Println("ai 正在调用mcp server的tool: pull_image, image_name=", imageName)
+	fmt.Println("开始拉取镜像，将显示实时进度...")
 
 	// 创建Docker客户端
-	cli, err := createDockerClient()
+	cli, err := docker.CreateDockerClient()
 	if err != nil {
 		return mcp.NewToolResultText(fmt.Sprintf("创建Docker客户端失败: %v", err)), err
 	}
 	defer cli.Close()
 
-	// 拉取镜像
-	reader, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
+	// 在服务器端打印进度的回调函数
+	progressCallback := func(update string) {
+		fmt.Print(update)
+	}
+
+	// 拉取镜像并获取进度输出
+	progressOutput, err := pullImageWithServerProgress(ctx, cli, imageName, progressCallback)
 	if err != nil {
 		return mcp.NewToolResultText(fmt.Sprintf("拉取镜像失败: %v", err)), err
 	}
+
+	fmt.Println("镜像拉取完成!")
+
+	// 返回结果
+	return mcp.NewToolResultText(fmt.Sprintf("成功拉取镜像: %s\n\n%s", imageName, progressOutput)), nil
+}
+
+// pullImageWithServerProgress 拉取镜像并在服务器端实时显示进度
+func pullImageWithServerProgress(ctx context.Context, cli *client.Client, imageName string, progressCallback func(string)) (string, error) {
+	// 拉取镜像
+	reader, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
+	if err != nil {
+		return "", err
+	}
 	defer reader.Close()
 
-	// 读取输出
-	buf := new(strings.Builder)
-	io.Copy(buf, reader)
+	// 创建进度读取器
+	progressReader := docker.NewProgressReader(reader)
+	progressReader.StartProgress()
 
-	return mcp.NewToolResultText(fmt.Sprintf("成功拉取镜像: %s", imageName)), nil
+	// 收集所有进度更新
+	var progressOutput strings.Builder
+	progressOutput.WriteString(fmt.Sprintf("开始拉取镜像: %s\n", imageName))
+
+	// 如果传入了回调函数，立即调用它显示开始信息
+	if progressCallback != nil {
+		progressCallback(fmt.Sprintf("开始拉取镜像: %s\n", imageName))
+	}
+
+	// 显示进度更新
+	for update := range progressReader.Updates {
+		progressOutput.WriteString(update)
+
+		// 如果传入了回调函数，实时显示进度
+		if progressCallback != nil {
+			progressCallback(update)
+		}
+	}
+
+	return progressOutput.String(), nil
 }
 
 // 处理系统相关命令
