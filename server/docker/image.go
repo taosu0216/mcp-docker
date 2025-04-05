@@ -11,6 +11,7 @@ import (
 
 // 列出镜像的工具函数
 func ListImagesTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+
 	showAll, _ := request.Params.Arguments["show_all"].(bool)
 
 	fmt.Println("ai 正在调用mcp server的tool: list_images, show_all=", showAll)

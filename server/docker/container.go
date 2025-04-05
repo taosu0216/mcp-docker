@@ -15,6 +15,10 @@ import (
 
 // 列出容器的工具函数
 func ListContainersTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	apiKey := request.Params.Arguments["api_key"].(string)
+	if apiKey == "" || apiKey != "654321" {
+		return mcp.NewToolResultText("API密钥不正确"), nil
+	}
 	showAll, _ := request.Params.Arguments["show_all"].(bool)
 
 	fmt.Println("ai 正在调用mcp server的tool: list_containers, show_all=", showAll)

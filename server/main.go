@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -22,7 +23,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"mcp-docker/server/auth"
 	"mcp-docker/server/docker"
 	"mcp-docker/server/k8s"
 )
@@ -49,21 +49,14 @@ func main() {
 
 	// 获取配置参数
 	address := os.Getenv("MCP_SERVER_ADDRESS")
-	apiKey := os.Getenv("API_KEY")
 
 	// 创建并配置MCP服务器
 	svr := server.NewMCPServer("docker-k8s mcp server", mcp.LATEST_PROTOCOL_VERSION)
 
-	// 注意：目前无法直接设置MCP服务器的说明文本
-	// 鉴权信息将在控制台输出并写入日志
-
 	fmt.Println()
 	fmt.Println("======================================")
-	fmt.Println("MCP服务器鉴权配置：")
-	fmt.Println("1. 通过HTTP请求头 'Authorization: Bearer <apiKey>' 传递")
-	fmt.Println("2. 通过HTTP请求头 'X-API-Key: <apiKey>' 传递")
-	fmt.Println("3. 通过URL参数 '?api_key=<apiKey>' 传递")
-	fmt.Println("客户端在连接时需要提供有效的API密钥，否则将被拒绝访问。")
+	fmt.Println("MCP服务器配置：")
+	fmt.Println("无需鉴权，所有客户端都可以直接访问")
 	fmt.Println("======================================")
 
 	// 添加Docker容器相关工具
@@ -71,6 +64,10 @@ func main() {
 		mcp.WithDescription("列出所有容器"),
 		mcp.WithBoolean("show_all",
 			mcp.Description("是否显示所有容器，包括已停止的容器"),
+		),
+		mcp.WithString("api_key",
+			mcp.Required(),
+			mcp.Description("API密钥"),
 		),
 	), docker.ListContainersTool)
 
@@ -396,41 +393,15 @@ func main() {
 		),
 	), k8s.DeleteNamespaceTool)
 
-	// 添加请求日志记录器
-	fmt.Println("启用请求日志记录器，将记录所有HTTP请求详情...")
-
-	// 创建并启动带有身份验证的SSE服务器
-	authSvr := auth.NewAuthenticatedMCPServerWithAPIKey(svr, apiKey)
+	// 添加HTTP服务器
+	httpServer := server.NewSSEServer(svr)
 
 	// 启动服务器
-	go func() {
-		defer func() {
-			e := recover()
-			if e != nil {
-				fmt.Println(e)
-			}
-		}()
-
-		fmt.Printf("Docker & K8s MCP 服务器准备启动，监听地址 %s\n", address)
-		fmt.Printf("API密钥认证已启用，API密钥: %s\n", apiKey)
-		fmt.Println("支持的认证方式:")
-		fmt.Println("1. HTTP头: Authorization: Bearer " + apiKey)
-		fmt.Println("2. HTTP头: X-API-Key: " + apiKey)
-		fmt.Println("3. 查询参数: ?api_key=" + apiKey)
-		fmt.Println("注意: 确保Cursor连接配置中的API密钥与服务器匹配")
-
-		// 打印Cursor配置指南
-		auth.PrintCursorMCPGuide(apiKey)
-
-		err := authSvr.Start(address)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}()
-
-	fmt.Printf("Docker & K8s MCP 服务器已启动，监听地址 %s\n", address)
-	fmt.Println("API密钥认证已启用")
-	select {}
+	fmt.Printf("正在启动MCP服务器，监听地址: %s\n", address)
+	err = http.ListenAndServe(address, httpServer)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 // 创建Docker客户端的辅助函数

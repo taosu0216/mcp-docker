@@ -7,7 +7,9 @@
 ```
 mcp-docker/
 ├── client/               # 客户端代码目录
-│   ├── main.go           # 客户端入口，与MCP服务器交互
+│   ├── cmd/              # 命令行工具目录
+│   │   └── main.go       # 客户端入口，与MCP服务器交互
+│   ├── pkg/              # 客户端核心包
 │   └── .env              # 客户端环境变量配置
 ├── server/               # 服务端代码目录
 │   ├── main.go           # 服务端入口，MCP服务器实现
@@ -61,7 +63,7 @@ mcp-docker/
 
 4. **启动客户端**：
    ```bash
-   go run client/main.go
+   go run client/cmd/main.go
    ```
 
 ## 环境变量配置
